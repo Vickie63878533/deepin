@@ -284,7 +284,8 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		} else {
 
 		}
-		req.Header.Set("User-Agent", GetRandomUserAgent())
+		randomUA := GetRandomUserAgent()
+		req.Header.Set("User-Agent", randomUA)
 		clientHints := GenerateClientHints(randomUA)
 		
 		if clientHints.Brand != "" {
