@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"regexp"
 	"log"
 	"math/rand"
 	"net"
@@ -97,6 +98,69 @@ func GetRandomUserAgent() string {
 
 	// 3. 返回该索引对应的 User-Agent 字符串。
 	return userAgents[randomIndex]
+}
+
+// ClientHints 存放解析 User-Agent 後得到的客戶端提示標頭
+type ClientHints struct {
+	Brand      string
+	Platform   string
+	Mobile     string
+}
+
+// GenerateClientHints 根據 User-Agent 字串產生對應的 Client Hints
+func GenerateClientHints(ua string) ClientHints {
+	ch := ClientHints{
+		Platform: `"Unknown"`,
+		Mobile:   "?0",
+		Brand:    "", // 預設為空，非 Chromium 瀏覽器不產生
+	}
+
+	// --- 1. 判斷平台 (Platform) ---
+	if strings.Contains(ua, "Windows NT") {
+		ch.Platform = `"Windows"`
+	} else if strings.Contains(ua, "Macintosh") || strings.Contains(ua, "Mac OS X") {
+		ch.Platform = `"macOS"`
+	} else if strings.Contains(ua, "Android") {
+		ch.Platform = `"Android"`
+		ch.Mobile = "?1" // Android 必定是 mobile
+	} else if strings.Contains(ua, "iPhone") || strings.Contains(ua, "iPad") {
+		ch.Platform = `"iOS"`
+		ch.Mobile = "?1" // iOS 必定是 mobile
+	} else if strings.Contains(ua, "Linux") {
+		ch.Platform = `"Linux"`
+	}
+
+	// --- 2. 判斷是否為行動裝置 (Mobile) ---
+	// 如果平台不是 Android/iOS，再透過 "Mobile" 關鍵字判斷
+	if ch.Mobile == "?0" && strings.Contains(ua, "Mobile") {
+		ch.Mobile = "?1"
+	}
+	
+	// --- 3. 產生品牌資訊 (Brand) ---
+	// 只處理基於 Chromium 的瀏覽器 (Chrome, Edge)
+	
+	// 匹配 Chrome 或 Edge 的版本號
+	re := regexp.MustCompile(`(Chrome|Edg)/(\d+)\.`)
+	matches := re.FindStringSubmatch(ua)
+
+	if len(matches) == 3 {
+		browserName := matches[1]
+		majorVersion := matches[2]
+		
+		// 這是 Google 用來增加混淆的 GREASE 機制，版本號可以隨意，但建議保留
+		greaseBrand := `"Not)A;Brand";v="99"` 
+
+		var browserBrand string
+		if browserName == "Chrome" && !strings.Contains(ua, "Edg/") { // 確保不是 Edge
+			browserBrand = fmt.Sprintf(`"Google Chrome";v="%s", "Chromium";v="%s"`, majorVersion, majorVersion)
+			ch.Brand = fmt.Sprintf("%s, %s", greaseBrand, browserBrand)
+		} else if browserName == "Edg" {
+			browserBrand = fmt.Sprintf(`"Microsoft Edge";v="%s", "Chromium";v="%s"`, majorVersion, majorVersion)
+			ch.Brand = fmt.Sprintf("%s, %s", greaseBrand, browserBrand)
+		}
+	}
+	
+	return ch
 }
 
 // GenerateRandomIpFromCidr 从一个给定的 CIDR 块中生成一个随机的IPv4地址。
@@ -203,6 +267,16 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		req.Header.Del("X-Middleware-Subrequest")
 		req.Header.Del("X-Stainless-Runtime")
 		req.Header.Del("X-Stainless-Lang")
+		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+		req.Header.Set("Connection", "keep-alive")
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Origin", "https://deepinfra.com")
+		req.Header.Set("Referer", "https://deepinfra.com/")
+		req.Header.Set("Sec-Fetch-Dest", "empty")
+		req.Header.Set("Sec-Fetch-Mode", "cors")
+		req.Header.Set("Sec-Fetch-Site", "same-site")
+		req.Header.Set("X-Deepinfra-Source", "web-embed")
+		req.Header.Set("Accept", "text/event-stream")
 		randomIP, err := GenerateRandomIpFromCidr("32.250.0.0/14")
 		if err != nil {
 			fmt.Printf("生成失败: %v\n", err)
@@ -211,6 +285,13 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 
 		}
 		req.Header.Set("User-Agent", GetRandomUserAgent())
+		clientHints := GenerateClientHints(randomUA)
+		
+		if clientHints.Brand != "" {
+		    req.Header.Set("sec-ch-ua", clientHints.Brand)
+		    req.Header.Set("sec-ch-ua-mobile", clientHints.Mobile)
+		    req.Header.Set("sec-ch-ua-platform", clientHints.Platform)
+		}
 
 		//log.Printf("Forwarding request: %s %s%s to %s%s", req.Method, req.Host, req.URL.Path, targetURL.Scheme, targetURL.Host+path)
 	}
